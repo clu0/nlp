@@ -37,7 +37,15 @@ def encoded_tensor_from_path(filepath: str, encoder) -> torch.Tensor:
     return torch.tensor(encoder.encode(text), dtype=torch.long, device=device)
 
 class TextData:
-    def __init__(self, text_filepath: str, batch_size: int = 16, block_size: int = 32, val_frac: float = 0.1, encode_scheme: str = "naive"):
+    def __init__(
+        self,
+        text_filepath: str,
+        batch_size: int = 16,
+        block_size: int = 32,
+        val_frac: float = 0.1,
+        encode_scheme: str = "naive",
+        **kwargs
+    ):
         """
         Since the text datasets are quite small in memory
         just read the text from the file, encode it,

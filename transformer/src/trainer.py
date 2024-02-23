@@ -9,10 +9,10 @@ from torch.nn import functional as F
 import torch.optim as optim
 from torch.optim import Optimizer
 
-from model import Decoder
-from dataset import TextData
-from logger import Logger, HumanOutputFormat, CSVOutputFormat
-from utils import compute_norms
+from src.model import Decoder
+from src.dataset import TextData
+from src.logger import Logger, HumanOutputFormat, CSVOutputFormat
+from src.utils import compute_norms
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -20,33 +20,49 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class DecoderTrainer:
     def __init__(
         self,
-        decoder_args: Dict[str, Any],
-        dataset_args: Dict[str, Any],
+        args: Dict[str, Any],
         log_save_dir: str,
         model_save_dir: str,
     ):
-        self.decoder = Decoder(**decoder_args)
-        self.dataset = TextData(**dataset_args)
+        self.dataset = TextData(**args)
+        args["n_vocab"] = self.dataset.n_vocab
+        self.decoder = Decoder(**args)
         self.log_save_dir = log_save_dir
         self.model_save_dir = model_save_dir
-        self.decoder_args = decoder_args
-        self.dataset_args = dataset_args
+        self.args = args
         self.loss: Optional[torch.Tensor] = None
         self.optimizer: Optional[Optimizer] = None
         self.logger: Optional[Logger] = None
         
 
     def setup_logging_and_model_dirs(self) -> Tuple[str, str]:
-        time_now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        time_now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         log_save_dir = os.path.join(
             self.log_save_dir, time_now
         )
         model_save_dir = os.path.join(
             self.model_save_dir, time_now
         )
-        os.mkdir(log_save_dir, exist_ok=True)
-        os.mkdir(model_save_dir, exist_ok=True)
+        os.makedirs(log_save_dir, exist_ok=True)
+        os.makedirs(model_save_dir, exist_ok=True)
         return log_save_dir, model_save_dir
+    
+    def get_model_save_prefix(self) -> str:
+        keys_to_include = {
+            "batch_size",
+            "block_size",
+            "encode_scheme",
+            "lr",
+            "n_embd",
+            "n_head",
+            "n_inner",
+            "n_layer",
+        }
+        model_save_prefix = "model"
+        for k, v in self.args.items():
+            if k in keys_to_include:
+                model_save_prefix += f"_{k}-{str(v)}"
+        return model_save_prefix
     
     def setup_logger(self, log_save_dir: str):
         output_formats = [
@@ -57,8 +73,8 @@ class DecoderTrainer:
             ),
         ]
         logger = Logger(output_formats)
-        logger.log(f"training args: \n{self.decoder_args}")
-        logger.log(f"dataset args: \n{self.dataset_args}")
+        logger.log(f"training args: \n{self.args}")
+        logger.log(f"cwd: {os.getcwd()}, files in cwd: {os.listdir()}")
         self.logger = logger
     
     def load_and_setup_train_model(self, model_checkpoint: Optional[str] = None):
@@ -81,7 +97,7 @@ class DecoderTrainer:
     def set_optimizer(self, lr: float):
         self.optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
     
-    def run_train_batch(self):
+    def run_train_batch(self, gradient_clip: Optional[float] = None):
         self.decoder.zero_grad()
         x, y = self.dataset.get_batch()
         self.compute_loss(x, y)
@@ -93,6 +109,8 @@ class DecoderTrainer:
         self.logger.logkv("grad_norm", grad_norm)
         self.logger.logkv_mean("weight_norm_avg", weight_norm)
         self.logger.logkv_mean("grad_norm_avg", grad_norm)
+        if gradient_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), gradient_clip)
         self.optimizer.step()
     
     def save_model(self, save_dir: str, prefix: str, iteration: int):
@@ -121,11 +139,10 @@ class DecoderTrainer:
         save_interval: int,
         model_checkpoint: Optional[str] = None,
         past_n_iter: Optional[int] = None,
+        gradient_clip: Optional[float] = None,
     ):
         log_save_dir, model_save_dir = self.setup_logging_and_model_dirs()
-        model_save_prefix = "".join(
-            ["mode"] + [f"_{k}-{v}_" for k, v in self.decoder_args.items()] + [f"_lr-{lr}"]
-        )
+        model_save_prefix = self.get_model_save_prefix()
         self.setup_logger(log_save_dir)
         self.load_and_setup_train_model(model_checkpoint)
         self.set_optimizer(lr)
@@ -136,7 +153,7 @@ class DecoderTrainer:
             if past_n_iter is not None:
                 i += past_n_iter
             self.logger.logkv("iteration", i)
-            self.run_train_batch()
+            self.run_train_batch(gradient_clip=gradient_clip)
             
             if (i + 1) % log_interval == 0:
                 self.logger.log(f"finished epoch {i}, took {time() - start_time} seconds")
