@@ -8,7 +8,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block_size", type=int, default=64, help="block size")
     parser.add_argument("--val_frac", type=float, default=0.1, help="validation fraction")
     parser.add_argument("--encode_scheme", type=str, default="naive", help="encoding scheme")
-    parser.add_argument("--text_filepath", type=str, default="input.txt", help="path to text file")
+    parser.add_argument("--text_filepath", type=str, default="datasets/input.txt", help="path to text file")
 
     # training
     parser.add_argument("--log_interval", type=int, default=100, help="log interval")
@@ -40,8 +40,6 @@ if __name__ == "__main__":
     
     trainer = DecoderTrainer(
         args=vars(args),
-        log_save_dir=args.log_save_dir,
-        model_save_dir=args.model_save_dir,
     )
 
     trainer.train(
