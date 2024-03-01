@@ -3,6 +3,7 @@ reads a text dataset from a file path, does a train/test split if specified,
 and returns batches
 """
 from typing import Tuple, List
+from abc import ABC, abstractmethod
 import tiktoken
 import torch
 
@@ -36,7 +37,12 @@ def encoded_tensor_from_path(filepath: str, encoder) -> torch.Tensor:
         text = f.read()
     return torch.tensor(encoder.encode(text), dtype=torch.long, device=device)
 
-class TextData:
+class Data(ABC):
+    @abstractmethod
+    def get_batch(self, split: str = "train") -> Tuple[torch.Tensor, torch.Tensor]:
+        pass
+
+class TextData(Data):
     def __init__(
         self,
         text_filepath: str,
@@ -74,4 +80,38 @@ class TextData:
         xs = torch.stack([data[i : i + self.block_size] for i in start_inds])
         ys = torch.stack([data[i + 1 : i + 1 + self.block_size] for i in start_inds])
         return xs, ys
-        
+
+class TranslationData(Data):
+    def __init__(
+        self,
+        src_token_filepath: str,
+        dest_token_filepath: str,
+        batch_size: int = 16,
+        val_frac: float = 0.1,
+    ):
+        """
+        loads data for translation
+        the filepaths are to .pt files that save the torch tensors of tokenized texts,
+        which should be of shape n_samples x block_size, and hence we don't need another block size
+        """
+        src_data: torch.Tensor = torch.load(src_token_filepath)
+        dest_data: torch.Tensor = torch.load(dest_token_filepath)
+        if val_frac > 0:
+            # sample random subset as train data
+            n_train = int(len(src_data) * (1 - val_frac))
+            self.train_src: torch.Tensor = src_data[:n_train]
+            self.val_src: torch.Tensor = src_data[n_train:]
+            self.train_dest: torch.Tensor = dest_data[:n_train]
+            self.val_dest: torch.Tensor = dest_data[n_train:]
+        else:
+            self.train_src = src_data
+            self.train_dest = dest_data
+        self.batch_size = batch_size
+    
+    def get_batch(self, split: str = "train") -> Tuple[torch.Tensor, torch.Tensor]:
+        src_data: torch.Tensor = self.train_src if split == "train" else self.val_src
+        dest_data: torch.Tensor = self.train_dest if split == "train" else self.val_dest
+        inds = torch.randint(high=len(src_data), size=(self.batch_size,))
+        xs = src_data[inds]
+        ys = dest_data[inds]
+        return xs, ys

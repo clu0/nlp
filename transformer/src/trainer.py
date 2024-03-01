@@ -11,13 +11,14 @@ from torch.nn import functional as F
 import torch.optim as optim
 from torch.optim import Optimizer
 
-from src.model import Decoder
-from src.dataset import TextData
+from src.model import Decoder, Encoder, CrossAttentionDecoder
+from src.dataset import TextData, TranslationData
 from src.logger import Logger, HumanOutputFormat, CSVOutputFormat
 from src.utils import compute_norms
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+CL100K_BASE_N_VOCAB = 100277
 
 class Trainer(ABC):
     def __init__(
@@ -106,7 +107,7 @@ class Trainer(ABC):
         setattr(self, optimizer_name, optimizer)
 
     @abstractmethod
-    def setup_optimizers(self, lr: float):
+    def setup_optimizers(self):
         pass
     
     @abstractmethod
@@ -133,18 +134,16 @@ class Trainer(ABC):
     def train(
         self,
         n_iter: int,
-        lr: float,
         n_val_iter: int,
         log_interval: int,
         save_interval: int,
-        model_checkpoint: Optional[str] = None,
         past_n_iter: Optional[int] = None,
         gradient_clip: Optional[float] = None,
     ):
         self.setup_logging_and_model_dirs()
         self.setup_logger()
-        self.setup_models(model_checkpoint=model_checkpoint)
-        self.setup_optimizers(lr)
+        self.setup_models()
+        self.setup_optimizers()
 
         # training loop
         start_time = time()
@@ -177,7 +176,7 @@ class DecoderTrainer(Trainer):
         super().__init__(args)
         self.dataset = TextData(**args)
         args["n_vocab"] = self.dataset.n_vocab
-        self.decoder = Decoder(**args)
+        self.decoder: Decoder
         self.model_name = "decoder"
         self.model_class = Decoder
         self.model_save_prefix: Optional[str] = None
@@ -187,12 +186,13 @@ class DecoderTrainer(Trainer):
     def setup_model_filepaths(self):
         self.model_save_prefix = self.get_model_save_prefix(prefix=self.model_name)
     
-    def setup_models(self, model_checkpoint: Optional[str] = None):
+    def setup_models(self):
         self.load_and_setup_train_model(
             model_name=self.model_name,
             model_class=self.model_class,
             args=self.args,
-            model_checkpoint=model_checkpoint)
+            model_checkpoint=self.args.get("model_checkpoint"),
+        )
         
     def compute_loss(self, x: torch.Tensor, y: torch.Tensor):
         logits: torch.Tensor = self.decoder(x)
@@ -203,8 +203,8 @@ class DecoderTrainer(Trainer):
         y = y.view(-1)
         self.loss = F.cross_entropy(logits, y)
     
-    def setup_optimizers(self, lr: float):
-        self.set_adam_optimizer("optimizer", "decoder", lr)
+    def setup_optimizers(self):
+        self.set_adam_optimizer("optimizer", "decoder", self.args["lr"])
     
     def run_train_batch(self, gradient_clip: Optional[float] = None):
         self.decoder.zero_grad()
@@ -237,4 +237,44 @@ class DecoderTrainer(Trainer):
             self.logger.logkv("val_loss", mean_val_loss)
             self.logger.logkv_mean("val_loss_avg", mean_val_loss)
             self.decoder.train()
+
+
+class EncoderDecoderTrainer(Trainer):
+    def __init__(
+        self,
+        args: Dict[str, Any],
+    ):
+        super().__init__(args)
+        self.dataset = TranslationData(**args)
+        self.encoder: Encoder
+        self.decoder: CrossAttentionDecoder
+        self.encoder_save_prefix: str
+        self.decoder_save_prefix: str
+        self.args: Dict[str, Any] = args
+        self.loss: torch.Tensor
+        self.encoder_optimizer: Optimizer
+        self.decoder_optimizer: Optimizer
     
+    def setup_model_filepaths(self):
+        self.encoder_save_prefix = self.get_model_save_prefix(prefix="encoder")
+        self.decoder_save_prefix = self.get_model_save_prefix(prefix="decoder")
+    
+    def setup_models(self):
+        # setup encoder
+        self.load_and_setup_train_model(
+            model_name="encoder",
+            model_class=Encoder,
+            args=self.args,
+            model_checkpoint=self.args.get("encoder_checkpoint"),
+        )
+        # setup decoder
+        self.load_and_setup_train_model(
+            model_name="decoder",
+            model_class=CrossAttentionDecoder,
+            args=self.args,
+            model_checkpoint=self.args.get("decoder_checkpoint"),
+        )
+    
+    def setup_optimizer(self):
+        self.set_adam_optimizer("encoder_optimizer", "encoder", self.args["encoder_lr"])
+        self.set_adam_optimizer("decoder_optimizer", "decoder", self.args["decoder_lr"])
